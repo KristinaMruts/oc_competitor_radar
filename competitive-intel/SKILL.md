@@ -79,35 +79,47 @@ If Notion returns an error message saying "Make sure the relevant pages and data
 
 ```
 1. Preflight (≤30s)
-   - fetch focus_areas from Notion → cache in run context
-   - fetch source_tiers from Notion → cache in run context
-   - load seen-URL set from sqlite (last 90 days)
-   - send Telegram "🟡 started" with focus areas summary
+   - fetch focus_areas from Notion Skill Focus DB → cache in run context
+   - fetch competitors with Tier+Tier Status from Notion Competitors DB
+     → filter to Tier Status="active", group by Tier (top/mid/watch)
+   - fetch existing signals from Notion Signals DB created in last 90 days
+     → build seen-set: {url_hash, (company+title+date)_hash}
+   - send Telegram "🟡 started" with focus areas summary + total competitors count
 
-2. Spawn sub-agents (per batch of 3-4 competitors)
-   See "Token economy" section below — this is critical.
-   Each sub-agent receives: tier-appropriate sources + this skill's methodology.
-   Returns: compact JSON list of raw signal candidates.
+2. Spawn sub-agents using the Task tool — MANDATORY, not optional.
+   Split active competitors into batches:
+     - all top tier (7 companies) → 2 batches of 3-4 each
+     - all mid tier (7 companies) → 2 batches of 3-4 each
+     - all watch tier (5 companies) → 1 batch (lighter scan)
+   Total: ~5 sub-agents in parallel.
+   Each sub-agent:
+     - Receives: its batch of competitors + their Tier + scan-depth rules
+     - Scans according to source-process.md (depth varies by tier)
+     - Filters out candidates whose URL is in the seen-set BEFORE returning
+     - Returns: compact JSON [{competitor, signals:[{title,date,url,source,raw_excerpt}, ...]}]
+     - Target: ≤500 tokens per sub-agent response
 
-3. Aggregate + dedup
-   - Merge sub-agent returns
-   - Filter out URLs in seen-set
-   - Cross-source dedup (same event from multiple sources → merge)
+3. Main session: aggregate sub-agent returns
+   - Cross-source dedup (same event from multiple sources → merge URLs into one signal)
+   - Re-verify nothing slipped past dedup (defensive — sub-agents should have already filtered)
 
-4. Classify + score (one pass)
-   - For each candidate: assign type, compute score per `scoring-rubric.md`
+4. Classify + score (one pass, classifier reads scoring-rubric.md)
+   - For each unique candidate: assign type, compute score
    - Drop everything < 3 (IGNORE bucket)
+   - Map score → Bucket field: 8-10 HIGH, 5-7 MED, 3-4 LOW
 
 5. Output
-   - Write all signals ≥ 3 to Notion "Competitor Signals" DB
-   - Telegram push for signals scoring ≥ 8 (HIGH)
-   - Update seen-URL set in sqlite
-   - Send Telegram "✅ done" with HIGH/MED/LOW counts
+   - Write all signals (Bucket ∈ {HIGH, MED, LOW}) to Notion Competitor Signals DB
+   - Telegram push for each HIGH (one message per signal)
+   - Send Telegram "✅ done — N signals (H HIGH, M MED, L LOW)"
+   - If 0 signals after dedup: write one quiet-run row + send "✅ quiet run — no new signals" to Telegram
 
 6. On any failure
    - Telegram "⚠️ partial: <what failed>"
-   - Always write run-status to runs.log
+   - Update issue status accordingly
 ```
+
+**Critical sub-agent rule**: do NOT process competitors inline in the main session. The Task tool (sub-agents) is the only way to keep context under control and to actually cover all configured competitors. A run that only scans 3 of 7 top-tier companies is a failure even if the issue is marked done.
 
 ## Token economy — critical for cost control
 
@@ -143,13 +155,38 @@ When fetching a source, **don't pass raw HTML to the classifier**. Instead:
 - Emits compact JSON: `{title, date, summary_one_line, url, source_type}`
 - Classifier sees only this compact form — ~200 tokens per candidate instead of 5-50KB of HTML
 
-### 4. Dedup before classification
+### 4. Dedup against existing Notion signals
 
-Cheap dedup happens **before** any LLM scoring:
+We do NOT keep a separate sqlite seen-set. The Notion Competitor Signals DB itself is the seen-set.
 
-- Hash (URL OR normalized title) against sqlite seen-set
-- If hash exists → skip silently, never reaches classifier
-- Only unseen candidates pay the classifier token cost
+**At preflight (Step 1):**
+
+```
+POST /v1/data_sources/$NOTION_SIGNALS_DB_ID/query
+Body: {
+  "filter": {
+    "property": "Detected",
+    "date": {"after": "<90 days ago ISO>"}
+  },
+  "page_size": 100
+}
+```
+
+(paginate via `next_cursor` if needed)
+
+Build two in-memory sets from results:
+- `seen_urls` = lowercased URL strings
+- `seen_titles` = lowercased (Title + Company-page-id + Date) tuples
+
+**In each sub-agent (Step 2):**
+
+Pass `seen_urls` and `seen_titles` to the sub-agent. The sub-agent must filter candidates against both sets BEFORE returning them to main session. A candidate matches if:
+- its URL (lowercased, query-string stripped) is in `seen_urls`, OR
+- the (title-lowercased, company-id, date) tuple is in `seen_titles`
+
+Matched candidates are dropped silently — they were already reported in a prior run.
+
+**Why this matters**: in the first production run we wrote "Roche acquires PathAI for $1.05B". Without dedup, every subsequent run would re-classify, re-score and re-Telegram that same event for the next 90 days. With dedup, we get only NEW events per run.
 
 ### 5. Prompt caching
 
