@@ -33,7 +33,47 @@ Two things vary between runs and must be **fetched at runtime**, not embedded:
    Columns: `competitor` (text), `tier` (top/mid/watch/drop), `status` (active/dropped), `notes` (text)
    These drive how deeply each competitor is scanned (see `source-process.md`).
 
-If either DB is unreachable → halt and report. Do not proceed with stale assumptions.
+3. **`signals_output`** — write to Notion DB `$NOTION_SIGNALS_DB_ID`
+   See "Output format" section for column schema.
+
+If either input DB is unreachable → halt and report. Do not proceed with stale assumptions.
+
+## Notion API access (critical — read before any Notion call)
+
+The Paperclip-managed runtime has **Node.js** but **no `curl` / `jq`**. Use Node's built-in `fetch`.
+
+**All Notion API calls must use the data-source API (2025-09-03) — not the legacy databases API.**
+
+The env vars `NOTION_FOCUS_DB_ID`, `NOTION_TIERS_DB_ID`, `NOTION_SIGNALS_DB_ID` are named "DB_ID" for historical reasons but actually contain **data source IDs**. They go in the `data_sources` URL path.
+
+### Reading rows from a DB
+
+```
+POST https://api.notion.com/v1/data_sources/{id}/query
+Headers:
+  Authorization: Bearer $NOTION_API_KEY
+  Notion-Version: 2025-09-03
+  Content-Type: application/json
+Body: {"page_size": 100, "filter": {...optional...}}
+```
+
+### Creating a row (e.g. write a signal)
+
+```
+POST https://api.notion.com/v1/pages
+Headers: (same as above)
+Body: {
+  "parent": {"data_source_id": "$NOTION_SIGNALS_DB_ID"},
+  "properties": {...see Output format below...}
+}
+```
+
+### Do NOT use these endpoints — they will return 404/400
+
+- ❌ `GET /v1/databases/{id}` (legacy)
+- ❌ `POST /v1/databases/{id}/query` (legacy)
+
+If Notion returns an error message saying "Make sure the relevant pages and databases are shared with your integration" — **don't trust that text**. With the legacy endpoint that error is misleading for data-source-API DBs. Verify by trying the `/v1/data_sources/{id}/query` endpoint first. If THAT also fails with 404, only then conclude there's a real access problem.
 
 ## Pipeline
 
