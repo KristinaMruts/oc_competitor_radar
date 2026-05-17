@@ -189,7 +189,23 @@ Paperclip loads SKILL.md once per agent run. Do not redundantly re-fetch supplem
 
 ### Telegram push (HIGH only, score ≥ 8)
 
-Plain text (Russian for body), no markdown parse_mode:
+**API call** (Paperclip env has no `curl` — use Node.js `fetch`):
+
+```
+POST https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage
+Content-Type: application/json
+Body: {
+  "chat_id": "{TELEGRAM_CHAT_ID}",
+  "text": "<message body — see template below>",
+  "disable_web_page_preview": false
+}
+```
+
+Do NOT set `parse_mode` — send as plain text. Telegram's markdown parser is strict and breaks on special characters in competitor names / titles.
+
+If `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` env vars are missing → skip Telegram silently (Notion is primary sink). Log "telegram_skipped: not configured" in run summary.
+
+**Message body template** (plain text, Russian where natural):
 
 ```
 🔴 Competitor signal — <YYYY-MM-DD>
@@ -201,7 +217,7 @@ Source: <URL>
 Notion: <Notion row URL>
 ```
 
-### Run status (Telegram)
+### Run status (Telegram) — same `sendMessage` API endpoint
 
 Always sent at run start and end:
 
