@@ -91,7 +91,18 @@ If Notion returns an error message saying "Make sure the relevant pages and data
      - all top tier (7 companies) → 2 batches of 3-4 each
      - all mid tier (7 companies) → 2 batches of 3-4 each
      - all watch tier (5 companies) → 1 batch (lighter scan)
-   Total: ~5 sub-agents in parallel.
+   Total: ~5 sub-agents.
+
+   **CRITICAL — spawn sub-agents SEQUENTIALLY, one at a time.**
+   Do NOT spawn multiple Task tool calls in parallel (single message with multiple tool_use blocks).
+   Anthropic API has per-minute token rate limits; 5 parallel sub-agents will hit HTTP 429.
+   Pattern:
+     - Spawn sub-agent 1 → wait for completion → store its return
+     - Spawn sub-agent 2 → wait for completion → store its return
+     - ... continue for all 5
+   This takes ~7-8 minutes total instead of ~2-3 parallel, but avoids 429 errors that lose entire runs.
+   If a sub-agent hits 429 internally despite this, wait 60 seconds and retry once.
+
    Each sub-agent:
      - Receives: its batch of competitors + their Tier + scan-depth rules
      - Scans according to source-process.md (depth varies by tier)
