@@ -172,20 +172,24 @@ Paperclip loads SKILL.md once per agent run. Do not redundantly re-fetch supplem
 
 ## Output format
 
-### Notion "Competitor Signals" DB (one row per signal)
+### Notion "Competitor Signals" DB — exact property names (match these!)
 
-| Column | Type | Notes |
+| Property name | Type | Notes |
 |---|---|---|
-| Company | relation → Competitors DB | |
-| Type | select | M&A / Funding / Market / Executive / Regulatory / Product / Clinical / Org |
-| Date | date | from source |
-| Title | text | one-line event |
-| Summary | rich text | 2-3 sentences: what + why it matters |
-| URL | url | canonical source |
-| Source | select | website / news / crunchbase / sec / fda / linkedin / other |
-| Score | number | 0-10 from rubric |
-| Status | select | new (default) |
-| Run | text | run_id for traceability |
+| `Title` | title | one-line event description (this is the page TITLE property) |
+| `Company` | relation → Competitors DB | array of competitor page IDs |
+| `Type` | select | one of: `M&A`, `Funding`, `Market`, `Executive`, `Regulatory`, `Product`, `Clinical`, `Org` |
+| `Date` | date | event date from source (ISO YYYY-MM-DD) |
+| `Summary` | rich_text | 2–3 sentences: what happened + why it matters for the company |
+| `URL` | url | canonical source URL |
+| `Source` | select | one of: `website`, `news`, `crunchbase`, `sec`, `fda`, `linkedin`, `industry-press`, `other` |
+| `Score` | number | 0–10 from rubric |
+| `Bucket` | select | one of: `HIGH`, `MED`, `LOW`, `info` (computed: 8-10=HIGH, 5-7=MED, 3-4=LOW, info for quiet-run) |
+| `Status` | select | `new` (default) — Kristina updates later to starred/ignored/actioned |
+| `Run ID` | rich_text | Paperclip run_id for traceability (NOTE: exact name `Run ID` with space, not `Run`) |
+| `Detected` | created_time | auto-set by Notion, do not write |
+
+**Property names are case-sensitive and must match exactly.** Use these literal strings as keys in the `properties` payload when calling `POST /v1/pages`. Common mistakes that cause `validation_error`: writing `Run` instead of `Run ID`, omitting `Bucket`, or skipping `Title` (which is the required title property).
 
 ### Telegram push (HIGH only, score ≥ 8)
 
