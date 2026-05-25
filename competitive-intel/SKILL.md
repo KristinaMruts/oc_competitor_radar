@@ -6,13 +6,17 @@ description: |
   in digital pathology AI. Detect product launches, regulatory approvals, M&A, executive
   changes, partnerships, clinical trials, funding. Use this skill when the agent is
   triggered for scheduled or manual competitive monitoring. Focus parameters and source
-  tier classifications are fetched from Notion at runtime, not hardcoded here.
-version: 0.2.0
+  tier classifications are fetched from Notion at runtime, not hardcoded here. Push HIGH
+  signals to Telegram (plain text) and/or Mattermost (markdown), independently configurable.
+version: 0.3.0
 metadata:
   cadence: twice weekly (Wed + Fri 09:00 local)
   config_sources:
     focus_db: Notion "Skill Focus" (id from env NOTION_FOCUS_DB_ID)
     tiers_db: Notion "Source Tiers" (id from env NOTION_TIERS_DB_ID)
+  changelog:
+    "0.3.0": Add Mattermost output channel (one post per HIGH signal, markdown format)
+    "0.2.0": Notion data-source API + 3-layer config split (skill/notion/code)
 ---
 
 # Competitive Intelligence Monitor
@@ -289,6 +293,70 @@ Or on partial failure:
 ⚠️ Partial — <what worked, what didn't>
 ```
 
+### Mattermost push (HIGH only, parallel to Telegram, independent)
+
+Mattermost supports full markdown (unlike Telegram). Same content rule as Telegram: one post per HIGH signal (score ≥ 8). Both channels independent — if Mattermost fails, Telegram still goes (and vice versa). Notion remains primary sink.
+
+If `MATTERMOST_URL`, `MATTERMOST_TOKEN`, AND `MATTERMOST_CHANNEL_ID` are NOT all set → skip Mattermost silently. Log `mattermost_skipped: not configured` in run summary.
+
+**API call** (Personal Access Token auth, Node.js `fetch`):
+
+```
+POST {MATTERMOST_URL}/api/v4/posts
+Headers:
+  Authorization: Bearer {MATTERMOST_TOKEN}
+  Content-Type: application/json
+Body:
+{
+  "channel_id": "{MATTERMOST_CHANNEL_ID}",
+  "message": "<markdown body — see template below>",
+  "props": {
+    "override_username": "{MATTERMOST_USERNAME}"  // optional, requires server-side EnablePostUsernameOverride
+  }
+}
+```
+
+The token is a Personal Access Token (user's Mattermost Profile → Security → Personal Access Tokens). Posts appear as the token's owner unless `override_username` is honored by the server.
+
+Errors: 401 = invalid token, 403 = no permission in channel, 404 = wrong URL/channel_id, 429 = rate-limited.
+
+**Message body template (one signal per post, markdown)**
+
+```markdown
+## 🔴 Competitor signal · <YYYY-MM-DD>
+
+### [<Company Name>](<source URL>) — **<Type>** · Score **<X>/10**
+
+> <One-sentence summary of what happened>
+
+**Why it matters:** <one sentence in Russian, business angle>
+
+📋 [Notion entry](<Notion row URL>)
+```
+
+**Run status (Mattermost) — always sent if Mattermost configured**
+
+Start:
+```markdown
+🟡 **Competitive Intel started** — <N> competitors, window <D> days  
+**Focus active:** <list of areas>
+```
+
+End:
+```markdown
+✅ **Done** — <S> signals (<H> HIGH, <M> MED, <L> LOW) · [today's digest](<Notion URL>)
+```
+
+Partial failure:
+```markdown
+⚠️ **Partial** — <what worked, what didn't>
+```
+
+Quiet run:
+```markdown
+✅ **Quiet run** — 0 new signals
+```
+
 ## Constraints
 
 - **Never invent.** If a source returned nothing, log it. Don't guess.
@@ -300,12 +368,29 @@ Or on partial failure:
 
 | Failure | Response |
 |---|---|
-| Notion API auth fails (401/500) | Halt. Telegram "🔴 Notion auth failed". |
-| `Skill Focus` DB empty | Halt. Telegram "🔴 No focus configured — set up Notion DB first". |
+| Notion API auth fails (401/500) | Halt. Send "🔴 Notion auth failed" to configured channels. |
+| `Skill Focus` DB empty | Halt. "🔴 No focus configured — set up Notion DB first". |
 | Single source fails (timeout/404) | Skip source, continue. Log as "X unavailable" in run digest. |
 | Anthropic rate-limit (429) | Wait 30s, retry once. Second fail → halt. |
-| Telegram notify fails | Continue. Notion is primary sink. Log to runs.log. |
+| Telegram notify fails | Continue. Notion + Mattermost still work. Log to run summary. |
+| Mattermost notify fails (401/403/404/429) | Continue. Notion + Telegram still work. Log which error in run summary. |
+| Neither Telegram nor Mattermost configured | Continue (Notion-only mode). Log `digests_skipped: not configured`. |
 | All sub-agents fail | Halt with "🔴 All scout sub-agents failed — check Railway logs". |
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `NOTION_API_KEY` | yes | Notion PAT or Internal Integration secret |
+| `NOTION_FOCUS_DB_ID` | yes | Data source ID of Skill Focus DB |
+| `NOTION_TIERS_DB_ID` | yes | Data source ID of Source Tiers DB |
+| `NOTION_SIGNALS_DB_ID` | yes | Data source ID of Competitor Signals DB (write target) |
+| `TELEGRAM_BOT_TOKEN` | no | Telegram bot token. Skip Telegram if unset. |
+| `TELEGRAM_CHAT_ID` | no | Telegram chat ID. |
+| `MATTERMOST_URL` | no | Mattermost base URL (no trailing slash). Skip Mattermost if any of the 3 vars missing. |
+| `MATTERMOST_TOKEN` | no | Personal Access Token. |
+| `MATTERMOST_CHANNEL_ID` | no | 26-char Channel ID. |
+| `MATTERMOST_USERNAME` | no | Override author username (requires server-side EnablePostUsernameOverride). |
 
 ## See also
 
